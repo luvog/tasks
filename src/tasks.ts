@@ -1,29 +1,44 @@
-import { setTimeout } from 'timers'
+import { setTimeout, setImmediate } from 'timers'
 import { EventEmitter } from 'events'
 
+export type Timer = NodeJS.Immediate | NodeJS.Timeout
+export type Callback = (...args: any[]) => void
+
+/**
+ * events.EventEmitter
+ * 1. start
+ * 2. pause
+ * 3. resume
+ * 4. error
+ * 5. end
+ */
 export class Task extends EventEmitter {
     //#region properties
     private static id = 0
-    private id: number
+    readonly id: number
     private countdown: number
-    private callback: (...args: any[]) => void
+    private remaining: number
+    private callback: Callback
     private args!: any[]
-    private timer!: NodeJS.Timeout
+    private timer!: Timer
     private startedAt!: Date
     private endedAt!: Date
     private paused = false
     private finished = false
+    private inmediate = false
     private errors: Error[]
     //#endregion
 
-    constructor(callback: (...args: any[]) => void, config: any, ...args: any[]) {
+    constructor(callback: Callback, config: any, ...args: any[]) {
         super()
         Task.id++
         this.id = Task.id
         this.callback = callback
-        this.countdown = config.countdown
+        this.countdown = this.remaining = config.countdown
         this.args = args
         this.errors = new Array<Error>()
+
+        this.config()
     }
 
     //#region public interface
@@ -33,6 +48,10 @@ export class Task extends EventEmitter {
 
     public isFinished(): boolean {
         return this.finished
+    }
+
+    public isInmediate(): boolean {
+        return this.inmediate
     }
 
     public hasErrors(): boolean {
@@ -45,17 +64,16 @@ export class Task extends EventEmitter {
 
     public run(): void {
         this.startedAt = new Date()
-        this.timer = setTimeout(
-            (args: any[]) => this.resolve(args),
-            this.countdown,
-            this.args
-        )
+        this.timer = this.getTimer()
         this.emit("start")
     }
 
     public pause(): void {
+        let running = Math.round((new Date().getTime() - this.startedAt.getTime()) / 1000) * 1000
         if (!this.isFinished() || !this.isPaused()) {
-            clearTimeout(this.timer)
+            this.remaining -= running
+
+            this.clear()
             this.paused = true
             this.emit("pause")
         }
@@ -63,18 +81,15 @@ export class Task extends EventEmitter {
 
     public resume(): void {
         if (!this.isFinished() && this.isPaused()) {
-            this.timer = setTimeout(
-                (args: any[]) => this.resolve(args),
-                this.countdown,
-                this.args
-            )
+            this.timer = this.getTimer()
             this.paused = false
             this.emit("resume")
         }
     }
 
     public terminate() {
-        clearTimeout(this.timer)
+        this.clear()
+
         this.endedAt = new Date()
         this.finished = true
         this.emit("end")
@@ -94,6 +109,30 @@ export class Task extends EventEmitter {
     //#endregion
 
     //#region private methods
+    private getTimer(): Timer {
+        if (this.isInmediate()) {
+            return setImmediate(            
+                (args: any[]) => this.resolve(args),
+                this.args
+            )
+        }
+        return setTimeout(            
+            (args: any[]) => this.resolve(args),
+            this.remaining,
+            this.args
+        )
+    }
+
+    private clear(): void {
+        if (this.isInmediate()) clearImmediate(<NodeJS.Immediate>this.timer)
+        else clearTimeout(<NodeJS.Timeout>this.timer)
+    }
+
+    private config(): void {
+        if (this.countdown < 0) throw new Error(`The countdown must be a number equal or greater than 0; ${this.countdown} given`)
+        if (this.countdown === 0) this.inmediate = true
+    }
+
     private resolve(args: any[]): void {
         try {
             this.callback(args)
@@ -102,10 +141,15 @@ export class Task extends EventEmitter {
             this.errors.push(error)
             this.emit("error", error)
         } finally {
-            this.endedAt = new Date()
-            this.finished = true
-            this.emit("end")
+            this.end()
         }
+    }
+
+    private end(): void {
+        this.clear()
+        this.endedAt = new Date()
+        this.finished = true
+        this.emit("end")
     }
     //#endregion
 }
