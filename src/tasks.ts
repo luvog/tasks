@@ -54,7 +54,7 @@ export class Task extends EventEmitter {
     }
 
     public pause(): void {
-        if (!this.isFinished || !this.isPaused()) {
+        if (!this.isFinished() || !this.isPaused()) {
             clearTimeout(this.timer)
             this.paused = true
             this.emit("pause")
