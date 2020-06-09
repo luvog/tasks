@@ -1,8 +1,13 @@
-import { setTimeout, setImmediate } from 'timers'
+import { setTimeout, setImmediate, setInterval } from 'timers'
 import { EventEmitter } from 'events'
 
 export type Timer = NodeJS.Immediate | NodeJS.Timeout
 export type Callback = (...args: any[]) => void
+
+export interface Config {
+    times: number
+    countdown: number
+}
 
 /**
  * events.EventEmitter
@@ -16,6 +21,9 @@ export class Task extends EventEmitter {
     //#region properties
     private static id = 0
     readonly id: number
+    // create a count variable for executions
+    private executions: number
+    private times: number
     private countdown: number
     private remaining: number
     private callback: Callback
@@ -25,20 +33,20 @@ export class Task extends EventEmitter {
     private endedAt!: Date
     private paused = false
     private finished = false
+    private loop = false
     private inmediate = false
     private errors: Error[]
     //#endregion
 
-    constructor(callback: Callback, config: any, ...args: any[]) {
+    constructor(callback: Callback, config: Config, ...args: any[]) {
         super()
         Task.id++
         this.id = Task.id
         this.callback = callback
+        this.executions = this.times = config.times
         this.countdown = this.remaining = config.countdown
         this.args = args
         this.errors = new Array<Error>()
-
-        this.config()
     }
 
     //#region public interface
@@ -48,6 +56,10 @@ export class Task extends EventEmitter {
 
     public isFinished(): boolean {
         return this.finished
+    }
+
+    public isLoop(): boolean {
+        return this.loop
     }
 
     public isInmediate(): boolean {
@@ -63,36 +75,37 @@ export class Task extends EventEmitter {
     }
 
     public run(): void {
-        this.startedAt = new Date()
-        this.timer = this.getTimer()
-        this.emit("start")
+        if (this.config()) {
+            this.startedAt = new Date()
+            this.timer = this.getTimer()
+            this.emit('start')
+        }
     }
 
     public pause(): void {
+        // before pause check wether is runnable or not
         let running = Math.round((new Date().getTime() - this.startedAt.getTime()) / 1000) * 1000
         if (!this.isFinished() || !this.isPaused()) {
             this.remaining -= running
 
             this.clear()
             this.paused = true
-            this.emit("pause")
+            this.emit('pause')
         }
     }
 
     public resume(): void {
+        // before resume check wether is runnable or not
         if (!this.isFinished() && this.isPaused()) {
             this.timer = this.getTimer()
             this.paused = false
-            this.emit("resume")
+            this.emit('resume')
         }
     }
 
     public terminate() {
-        this.clear()
-
-        this.endedAt = new Date()
-        this.finished = true
-        this.emit("end")
+        this.times = 0
+        this.end()
     }
 
     public duration(): number {
@@ -115,6 +128,12 @@ export class Task extends EventEmitter {
                 (args: any[]) => this.resolve(args),
                 this.args
             )
+        } else if (this.isLoop()) {
+            return setInterval(
+                (args: any[]) => this.resolve(args),
+                this.remaining,
+                this.args
+            )
         }
         return setTimeout(            
             (args: any[]) => this.resolve(args),
@@ -124,32 +143,41 @@ export class Task extends EventEmitter {
     }
 
     private clear(): void {
-        if (this.isInmediate()) clearImmediate(<NodeJS.Immediate>this.timer)
+        if (this.isLoop()) clearInterval(<NodeJS.Timeout>this.timer)
+        else if (this.isInmediate()) clearImmediate(<NodeJS.Immediate>this.timer)
         else clearTimeout(<NodeJS.Timeout>this.timer)
     }
 
-    private config(): void {
-        if (this.countdown < 0) throw new Error(`The countdown must be a number equal or greater than 0; ${this.countdown} given`)
-        if (this.countdown === 0) this.inmediate = true
+    private config(): boolean {
+        if (this.executions < 0) this.emit('error', new Error(`The number of executions must be equal or greater than 0; ${this.executions} given`))
+        else if (this.executions > 1) this.loop = true
+        if (this.countdown < 0) this.emit('error', new Error(`The countdown must be a number equal or greater than 0; ${this.countdown} given`))
+        else if (this.countdown === 0) this.inmediate = true
+        if (this.times >= 0 && this.countdown >= 0) return true
+        return false
     }
 
     private resolve(args: any[]): void {
         try {
             this.callback(args)
-            this.emit("result")
+            this.emit('result')
         } catch(error) {
             this.errors.push(error)
-            this.emit("error", error)
+            this.emit('error', error)
         } finally {
             this.end()
         }
     }
 
     private end(): void {
-        this.clear()
-        this.endedAt = new Date()
-        this.finished = true
-        this.emit("end")
+        // try to reset next iteration of setInterval if remaining time is different of the original countdown
+        this.times--
+        if (this.times === 0) {
+            this.clear()
+            this.endedAt = new Date()
+            this.finished = true
+            this.emit('end')
+        }
     }
     //#endregion
 }
